@@ -6,7 +6,7 @@
  *    \__\_\\__,_|\___||___/\__|____/|____/
  *
  *  Copyright (c) 2014-2019 Appsicle
- *  Copyright (c) 2019-2023 QuestDB
+ *  Copyright (c) 2019-2024 QuestDB
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -26,17 +26,20 @@ package io.questdb.griffin.model;
 
 import io.questdb.std.Mutable;
 import io.questdb.std.ObjectFactory;
+import io.questdb.std.str.CharSink;
+import io.questdb.std.str.Sinkable;
+import org.jetbrains.annotations.NotNull;
 
 import java.util.Objects;
 
-public class QueryColumn implements Mutable {
-    public final static ObjectFactory<QueryColumn> FACTORY = QueryColumn::new;
+public class QueryColumn implements Mutable, Sinkable {
+    public static final ObjectFactory<QueryColumn> FACTORY = QueryColumn::new;
     private CharSequence alias;
     private ExpressionNode ast;
     private int columnType;
     private boolean includeIntoWildcard = true;
 
-    protected QueryColumn() {
+    public QueryColumn() {
     }
 
     @Override
@@ -80,6 +83,10 @@ public class QueryColumn implements Mutable {
         return includeIntoWildcard;
     }
 
+    public boolean isWindowColumn() {
+        return false;
+    }
+
     public QueryColumn of(CharSequence alias, ExpressionNode ast) {
         return of(alias, ast, true);
     }
@@ -98,5 +105,10 @@ public class QueryColumn implements Mutable {
 
     public void setAlias(CharSequence alias) {
         this.alias = alias;
+    }
+
+    @Override
+    public void toSink(@NotNull CharSink<?> sink) {
+        sink.put(ast).putAscii(" as ").put(alias);
     }
 }

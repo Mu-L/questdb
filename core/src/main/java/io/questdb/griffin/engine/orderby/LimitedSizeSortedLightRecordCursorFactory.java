@@ -6,7 +6,7 @@
  *    \__\_\\__,_|\___||___/\__|____/|____/
  *
  *  Copyright (c) 2014-2019 Appsicle
- *  Copyright (c) 2019-2023 QuestDB
+ *  Copyright (c) 2019-2024 QuestDB
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -27,7 +27,11 @@ package io.questdb.griffin.engine.orderby;
 import io.questdb.cairo.AbstractRecordCursorFactory;
 import io.questdb.cairo.CairoConfiguration;
 import io.questdb.cairo.ListColumnFilter;
-import io.questdb.cairo.sql.*;
+import io.questdb.cairo.sql.DelegatingRecordCursor;
+import io.questdb.cairo.sql.Function;
+import io.questdb.cairo.sql.RecordCursor;
+import io.questdb.cairo.sql.RecordCursorFactory;
+import io.questdb.cairo.sql.RecordMetadata;
 import io.questdb.griffin.PlanSink;
 import io.questdb.griffin.SqlException;
 import io.questdb.griffin.SqlExecutionContext;
@@ -46,6 +50,7 @@ public class LimitedSizeSortedLightRecordCursorFactory extends AbstractRecordCur
     private final Function hiFunction;
     private final Function loFunction;
     private final ListColumnFilter sortColumnFilter;
+    private final int timestampIndex;
     // initialization delayed to getCursor() because lo/hi need to be evaluated
     private DelegatingRecordCursor cursor; // LimitedSizeSortedLightRecordCursor or SortedLightRecordCursor
 
@@ -56,7 +61,8 @@ public class LimitedSizeSortedLightRecordCursorFactory extends AbstractRecordCur
             RecordComparator comparator,
             Function loFunc,
             @Nullable Function hiFunc,
-            ListColumnFilter sortColumnFilter
+            ListColumnFilter sortColumnFilter,
+            int timestampIndex // index of timestamp that base record cursor is already sorted on
     ) {
         super(metadata);
         this.base = base;
@@ -65,6 +71,7 @@ public class LimitedSizeSortedLightRecordCursorFactory extends AbstractRecordCur
         this.configuration = configuration;
         this.comparator = comparator;
         this.sortColumnFilter = sortColumnFilter;
+        this.timestampIndex = timestampIndex;
     }
 
     @Override
@@ -74,28 +81,33 @@ public class LimitedSizeSortedLightRecordCursorFactory extends AbstractRecordCur
 
     @Override
     public RecordCursor getCursor(SqlExecutionContext executionContext) throws SqlException {
-        boolean preTouchEnabled = executionContext.isColumnPreTouchEnabled();
-        // Forcefully disable column pre-touch for LIMIT K,N queries for all downstream
+        boolean oldPreTouchEnabled = executionContext.isColumnPreTouchEnabled();
+        // Forcefully disable column pre-touch for all ORDER BY + LIMIT queries for all downstream
         // async filtered factories to avoid redundant disk reads.
-        executionContext.setColumnPreTouchEnabled(preTouchEnabled && hiFunction == null);
-        RecordCursor baseCursor = null;
+        executionContext.setColumnPreTouchEnabled(false);
+        final RecordCursor baseCursor = base.getCursor(executionContext);
         try {
-            baseCursor = base.getCursor(executionContext);
             initialize(executionContext, baseCursor);
+        } catch (Throwable th) {
+            executionContext.setColumnPreTouchEnabled(oldPreTouchEnabled);
+            Misc.free(baseCursor);
+            throw th;
+        }
+
+        try {
             cursor.of(baseCursor, executionContext);
             return cursor;
-        } catch (Throwable ex) {
-            Misc.free(baseCursor);
+        } catch (Throwable th) {
             Misc.free(cursor);
-            throw ex;
+            throw th;
         } finally {
-            executionContext.setColumnPreTouchEnabled(preTouchEnabled);
+            executionContext.setColumnPreTouchEnabled(oldPreTouchEnabled);
         }
     }
 
     @Override
-    public boolean hasDescendingOrder() {
-        return SortedRecordCursorFactory.hasDescendingOrder(sortColumnFilter);
+    public int getScanDirection() {
+        return SortedRecordCursorFactory.getScanDirection(sortColumnFilter);
     }
 
     @Override
@@ -115,10 +127,10 @@ public class LimitedSizeSortedLightRecordCursorFactory extends AbstractRecordCur
      * <p>
      * Similar to LimitRecordCursorFactory.LimitRecordCursor, but doesn't check the underlying count.
      */
-    public void initializeLimitedSizeCursor(SqlExecutionContext executionContext, RecordCursor base) throws SqlException {
-        loFunction.init(base, executionContext);
+    public void initializeLimitedSizeCursor(SqlExecutionContext executionContext, RecordCursor baseCursor) throws SqlException {
+        loFunction.init(baseCursor, executionContext);
         if (hiFunction != null) {
-            hiFunction.init(base, executionContext);
+            hiFunction.init(baseCursor, executionContext);
         }
 
         long skipFirst = 0, skipLast = 0, limit;
@@ -178,7 +190,11 @@ public class LimitedSizeSortedLightRecordCursorFactory extends AbstractRecordCur
                 limit
         );
 
-        this.cursor = new LimitedSizeSortedLightRecordCursor(chain, comparator, limit, skipFirst, skipLast);
+        if (timestampIndex == -1 || !isFirstN) {
+            this.cursor = new LimitedSizeSortedLightRecordCursor(chain, comparator, limit, skipFirst, skipLast);
+        } else {
+            this.cursor = new LimitedSizePartiallySortedLightRecordCursor(chain, comparator, limit, skipFirst, skipLast, timestampIndex);
+        }
     }
 
     @Override
@@ -193,8 +209,21 @@ public class LimitedSizeSortedLightRecordCursorFactory extends AbstractRecordCur
         if (hiFunction != null) {
             sink.meta("hi").val(hiFunction);
         }
+        if (timestampIndex != -1) {
+            sink.meta("partiallySorted").val(true);
+        }
         SortedLightRecordCursorFactory.addSortKeys(sink, sortColumnFilter);
         sink.child(base);
+    }
+
+    @Override
+    public boolean usesCompiledFilter() {
+        return base.usesCompiledFilter();
+    }
+
+    @Override
+    public boolean usesIndex() {
+        return base.usesIndex();
     }
 
     // Check if lo, hi is set and lo >=0 while hi < 0 (meaning - return whole result set except some rows at start and some at the end)
@@ -205,9 +234,7 @@ public class LimitedSizeSortedLightRecordCursorFactory extends AbstractRecordCur
             hiFunction.init(baseCursor, executionContext);
         }
 
-        return !(loFunction.getLong(null) >= 0 &&
-                hiFunction != null &&
-                hiFunction.getLong(null) < 0);
+        return !(loFunction.getLong(null) >= 0 && hiFunction != null && hiFunction.getLong(null) < 0);
     }
 
     private void initialize(SqlExecutionContext executionContext, RecordCursor baseCursor) throws SqlException {
@@ -238,10 +265,7 @@ public class LimitedSizeSortedLightRecordCursorFactory extends AbstractRecordCur
 
     @Override
     protected void _close() {
-        base.close();
-        if (cursor != null) {
-            cursor.close();
-        }
+        Misc.free(base);
+        Misc.free(cursor);
     }
 }
-
