@@ -6,7 +6,7 @@
  *    \__\_\\__,_|\___||___/\__|____/|____/
  *
  *  Copyright (c) 2014-2019 Appsicle
- *  Copyright (c) 2019-2023 QuestDB
+ *  Copyright (c) 2019-2024 QuestDB
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -26,10 +26,11 @@ package io.questdb.griffin.engine.groupby;
 
 import io.questdb.std.datetime.microtime.Timestamps;
 import io.questdb.std.str.CharSink;
+import org.jetbrains.annotations.NotNull;
 
 import static io.questdb.std.datetime.microtime.Timestamps.toMicros;
 
-class MonthTimestampSampler implements TimestampSampler {
+public class MonthTimestampSampler implements TimestampSampler {
     private final int monthCount;
     private int startDay;
     private int startHour;
@@ -38,7 +39,7 @@ class MonthTimestampSampler implements TimestampSampler {
     private int startMin;
     private int startSec;
 
-    MonthTimestampSampler(int monthCount) {
+    public MonthTimestampSampler(int monthCount) {
         this.monthCount = monthCount;
     }
 
@@ -76,8 +77,8 @@ class MonthTimestampSampler implements TimestampSampler {
     }
 
     @Override
-    public void toSink(CharSink sink) {
-        sink.put("MonthTsSampler");
+    public void toSink(@NotNull CharSink<?> sink) {
+        sink.putAscii("MonthTsSampler");
     }
 
     private long addMonth(long timestamp, int monthCount) {

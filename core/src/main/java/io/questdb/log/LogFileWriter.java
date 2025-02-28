@@ -6,7 +6,7 @@
  *    \__\_\\__,_|\___||___/\__|____/|____/
  *
  *  Copyright (c) 2014-2019 Appsicle
- *  Copyright (c) 2019-2023 QuestDB
+ *  Copyright (c) 2019-2024 QuestDB
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -38,21 +38,21 @@ public class LogFileWriter extends SynchronizedJob implements Closeable, LogWrit
 
     private static final int DEFAULT_BUFFER_SIZE = 1024 * 1024;
     private final int level;
-    private final RingQueue<LogRecordSink> ring;
+    private final RingQueue<LogRecordUtf8Sink> ring;
     private final SCSequence subSeq;
     private long _wptr;
     private long buf;
     private int bufSize;
     private String bufferSize;
-    private int fd = -1;
+    private long fd = -1;
     private long lim;
     private String location;
-    private QueueConsumer<LogRecordSink> myConsumer = this::copyToBuffer;
+    private QueueConsumer<LogRecordUtf8Sink> myConsumer = this::copyToBuffer;
     // can be set via reflection
     @SuppressWarnings("unused")
     private String truncate;
 
-    public LogFileWriter(RingQueue<LogRecordSink> ring, SCSequence subSeq, int level) {
+    public LogFileWriter(RingQueue<LogRecordUtf8Sink> ring, SCSequence subSeq, int level) {
         this.ring = ring;
         this.subSeq = subSeq;
         this.level = level;
@@ -71,12 +71,13 @@ public class LogFileWriter extends SynchronizedJob implements Closeable, LogWrit
         }
         this.buf = _wptr = Unsafe.malloc(bufSize, MemoryTag.NATIVE_LOGGER);
         this.lim = buf + bufSize;
-        try (Path path = new Path().of(location).$()) {
+        try (Path path = new Path()) {
+            path.of(location);
             if (truncate != null && Chars.equalsLowerCaseAscii(truncate, "true")) {
-                this.fd = Files.openRW(path);
+                this.fd = Files.openRW(path.$());
                 Files.truncate(fd, 0);
             } else {
-                this.fd = Files.openAppend(path);
+                this.fd = Files.openAppend(path.$());
             }
         }
         if (this.fd == -1) {
@@ -103,6 +104,11 @@ public class LogFileWriter extends SynchronizedJob implements Closeable, LogWrit
         return bufSize;
     }
 
+    @TestOnly
+    public QueueConsumer<LogRecordUtf8Sink> getMyConsumer() {
+        return myConsumer;
+    }
+
     @Override
     public boolean runSerially() {
         if (subSeq.consumeAll(ring, myConsumer)) {
@@ -125,30 +131,25 @@ public class LogFileWriter extends SynchronizedJob implements Closeable, LogWrit
         this.location = location;
     }
 
-    private void copyToBuffer(LogRecordSink sink) {
-        final int l = sink.length();
-        if ((sink.getLevel() & this.level) != 0 && l > 0) {
-            if (_wptr + l >= lim) {
+    @TestOnly
+    public void setMyConsumer(QueueConsumer<LogRecordUtf8Sink> myConsumer) {
+        this.myConsumer = myConsumer;
+    }
+
+    private void copyToBuffer(LogRecordUtf8Sink sink) {
+        final int size = sink.size();
+        if ((sink.getLevel() & this.level) != 0 && size > 0) {
+            if (_wptr + size >= lim) {
                 flush();
             }
 
-            Vect.memcpy(_wptr, sink.getAddress(), l);
-            _wptr += l;
+            Vect.memcpy(_wptr, sink.ptr(), size);
+            _wptr += size;
         }
     }
 
     private void flush() {
         Files.append(fd, buf, (int) (_wptr - buf));
         _wptr = buf;
-    }
-
-    @TestOnly
-    QueueConsumer<LogRecordSink> getMyConsumer() {
-        return myConsumer;
-    }
-
-    @TestOnly
-    void setMyConsumer(QueueConsumer<LogRecordSink> myConsumer) {
-        this.myConsumer = myConsumer;
     }
 }

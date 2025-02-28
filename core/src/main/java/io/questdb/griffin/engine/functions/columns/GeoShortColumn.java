@@ -6,7 +6,7 @@
  *    \__\_\\__,_|\___||___/\__|____/|____/
  *
  *  Copyright (c) 2014-2019 Appsicle
- *  Copyright (c) 2019-2023 QuestDB
+ *  Copyright (c) 2019-2024 QuestDB
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -55,24 +55,24 @@ public class GeoShortColumn extends GeoShortFunction {
         return new GeoShortColumn(columnIndex, columnType);
     }
 
+    @TestOnly
+    public int getColumnIndex() {
+        return columnIndex;
+    }
+
     @Override
     public short getGeoShort(Record rec) {
         return rec.getGeoShort(columnIndex);
     }
 
     @Override
-    public boolean isReadThreadSafe() {
+    public boolean isThreadSafe() {
         return true;
     }
 
     @Override
     public void toPlan(PlanSink sink) {
         sink.putColumnName(columnIndex);
-    }
-
-    @TestOnly
-    int getColumnIndex() {
-        return columnIndex;
     }
 
     static {

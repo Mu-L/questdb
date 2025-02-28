@@ -6,7 +6,7 @@
  *    \__\_\\__,_|\___||___/\__|____/|____/
  *
  *  Copyright (c) 2014-2019 Appsicle
- *  Copyright (c) 2019-2023 QuestDB
+ *  Copyright (c) 2019-2024 QuestDB
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -73,13 +73,19 @@ public class SortedRecordCursorFactory extends AbstractRecordCursorFactory {
 
     @Override
     public RecordCursor getCursor(SqlExecutionContext executionContext) throws SqlException {
-        this.cursor.of(base.getCursor(executionContext), executionContext);
-        return cursor;
+        final RecordCursor baseCursor = base.getCursor(executionContext);
+        try {
+            cursor.of(baseCursor, executionContext);
+            return cursor;
+        } catch (Throwable th) {
+            cursor.close();
+            throw th;
+        }
     }
 
     @Override
-    public boolean hasDescendingOrder() {
-        return hasDescendingOrder(sortColumnFilter);
+    public int getScanDirection() {
+        return getScanDirection(sortColumnFilter);
     }
 
     @Override
@@ -99,16 +105,22 @@ public class SortedRecordCursorFactory extends AbstractRecordCursorFactory {
         return base.usesCompiledFilter();
     }
 
-    static boolean hasDescendingOrder(ListColumnFilter sortColumnFilter) {
-        assert sortColumnFilter.size() > 0;
+    @Override
+    public boolean usesIndex() {
+        return base.usesIndex();
+    }
 
-        for (int i = 0, n = sortColumnFilter.size(); i < n; i++) {
-            if (sortColumnFilter.get(i) >= 0) {
-                return false;
-            }
+    private static int toOrder(int filter) {
+        if (filter >= 0) {
+            return SCAN_DIRECTION_FORWARD;
+        } else {
+            return SCAN_DIRECTION_BACKWARD;
         }
+    }
 
-        return true;
+    static int getScanDirection(ListColumnFilter sortColumnFilter) {
+        assert sortColumnFilter.size() > 0;
+        return SortedRecordCursorFactory.toOrder(sortColumnFilter.get(0));
     }
 
     @Override
