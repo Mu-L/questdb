@@ -6,7 +6,7 @@
  *    \__\_\\__,_|\___||___/\__|____/|____/
  *
  *  Copyright (c) 2014-2019 Appsicle
- *  Copyright (c) 2019-2023 QuestDB
+ *  Copyright (c) 2019-2024 QuestDB
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -43,9 +43,9 @@ import java.util.ArrayDeque;
 abstract class WeakObjectPoolBase<T> {
     // package private for testing
     final ArrayDeque<T> cache = new ArrayDeque<>();
-
     private final int initSize;
     private final int maxSize;
+    int leased = 0;
 
     public WeakObjectPoolBase(int initSize) {
         this.initSize = initSize;
@@ -53,8 +53,32 @@ abstract class WeakObjectPoolBase<T> {
     }
 
     public T pop() {
+        leased++;
         final T obj = cache.poll();
         return obj == null ? newInstance() : obj;
+    }
+
+    public boolean push(T obj) {
+        leased--;
+        assert obj != null;
+        if (cache.size() < maxSize) {
+            clear(obj);
+            cache.push(obj);
+            return true;
+        } else {
+            close(obj);
+            return false;
+        }
+    }
+
+    public int resetLeased() {
+        int l = leased;
+        leased = 0;
+        return l;
+    }
+
+    public int size() {
+        return cache.size();
     }
 
     void clear(T obj) {
@@ -70,16 +94,4 @@ abstract class WeakObjectPoolBase<T> {
     }
 
     abstract T newInstance();
-
-    boolean push(T obj) {
-        assert obj != null;
-        if (cache.size() < maxSize) {
-            clear(obj);
-            cache.push(obj);
-            return true;
-        } else {
-            close(obj);
-            return false;
-        }
-    }
 }

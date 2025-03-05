@@ -6,7 +6,7 @@
  *    \__\_\\__,_|\___||___/\__|____/|____/
  *
  *  Copyright (c) 2014-2019 Appsicle
- *  Copyright (c) 2019-2023 QuestDB
+ *  Copyright (c) 2019-2024 QuestDB
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -51,18 +51,28 @@ public class ExceptRecordCursorFactory extends AbstractSetRecordCursorFactory {
             @Transient @NotNull ColumnTypes mapValueTypes
     ) {
         super(metadata, factoryA, factoryB, castFunctionsA, castFunctionsB);
-        Map map = MapFactory.createMap(configuration, mapKeyTypes, mapValueTypes);
-        if (castFunctionsA == null && castFunctionsB == null) {
-            cursor = new ExceptRecordCursor(map, recordSink);
-        } else {
-            assert castFunctionsA != null && castFunctionsB != null;
-            cursor = new ExceptCastRecordCursor(map, recordSink, castFunctionsA, castFunctionsB);
+        Map mapA = null;
+        Map mapB = null;
+        try {
+            mapA = MapFactory.createOrderedMap(configuration, mapKeyTypes, mapValueTypes);
+            mapB = MapFactory.createOrderedMap(configuration, mapKeyTypes, mapValueTypes);
+            if (castFunctionsA == null && castFunctionsB == null) {
+                cursor = new ExceptRecordCursor(mapA, mapB, recordSink);
+            } else {
+                assert castFunctionsA != null && castFunctionsB != null;
+                cursor = new ExceptCastRecordCursor(mapA, mapB, recordSink, castFunctionsA, castFunctionsB);
+            }
+        } catch (Throwable th) {
+            Misc.free(mapA);
+            Misc.free(mapB);
+            close();
+            throw th;
         }
     }
 
     @Override
-    public boolean hasDescendingOrder() {
-        return factoryA.hasDescendingOrder();
+    public int getScanDirection() {
+        return factoryA.getScanDirection();
     }
 
     @Override
