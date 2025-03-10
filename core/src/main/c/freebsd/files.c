@@ -6,7 +6,7 @@
  *    \__\_\\__,_|\___||___/\__|____/|____/
  *
  *  Copyright (c) 2014-2019 Appsicle
- *  Copyright (c) 2019-2023 QuestDB
+ *  Copyright (c) 2019-2024 QuestDB
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -69,32 +69,27 @@ static inline jlong _io_questdb_std_Files_mremap0
     return (jlong) newAddr;
 }
 
-JNIEXPORT jlong JNICALL JavaCritical_io_questdb_std_Files_mremap0
-        (jint fd, jlong address, jlong previousLen, jlong newLen, jlong offset, jint flags) {
-    return _io_questdb_std_Files_mremap0(fd, address, previousLen, newLen, offset, flags);
-}
-
 JNIEXPORT jlong JNICALL Java_io_questdb_std_Files_mremap0
         (JNIEnv *e, jclass cl, jint fd, jlong address, jlong previousLen, jlong newLen, jlong offset, jint flags) {
     return _io_questdb_std_Files_mremap0(fd, address, previousLen, newLen, offset, flags);
 }
 
-size_t copyData0(int inFd, int outFd, off_t fromOffset, jlong length) {
+size_t copyData0(int srcFd, long dstFd, off_t srcOffset, off_t dstOffset, int64_t length) {
     char buf[4096 * 4]; // 16K
-    size_t read_sz;
-    off_t rd_off = fromOffset;
-    off_t wrt_off = 0;
+    off_t read_sz;
+    off_t rd_off = srcOffset;
+    off_t wrt_off = dstOffset;
     off_t len;
 
     if (length < 0) {
-        len = LONG_MAX - fromOffset;
+        len = LONG_MAX - srcOffset;
     } else {
         len = length;
     }
-    off_t hi = fromOffset + len;
+    off_t hi = srcOffset + len;
 
     for (;;) {
-        RESTARTABLE(pread(inFd, buf, sizeof buf, rd_off), read_sz);
+        RESTARTABLE(pread(srcFd, buf, sizeof buf, rd_off), read_sz);
         if (read_sz <= 0) {
             break;
         }
@@ -106,7 +101,7 @@ size_t copyData0(int inFd, int outFd, off_t fromOffset, jlong length) {
 
         long wrtn;
         do {
-            RESTARTABLE(pwrite(outFd, out_ptr, read_sz, wrt_off), wrtn);
+            RESTARTABLE(pwrite(dstFd, out_ptr, read_sz, wrt_off), wrtn);
             if (wrtn >= 0) {
                 read_sz -= wrtn;
                 out_ptr += wrtn;
@@ -128,12 +123,17 @@ size_t copyData0(int inFd, int outFd, off_t fromOffset, jlong length) {
         }
     }
 
-    return rd_off - fromOffset;
+    return rd_off - srcOffset;
 }
 
 JNIEXPORT jlong JNICALL Java_io_questdb_std_Files_copyData
         (JNIEnv *e, jclass cls, jint srcFd, jint dstFd, jlong srcOffset, jlong length) {
-    return (jlong) copyData0((int) srcFd, (int) dstFd, srcOffset, length);
+    return (jlong) copyData0((int) srcFd, (int) dstFd, srcOffset, 0, (int64_t) length);
+}
+
+JNIEXPORT jlong JNICALL Java_io_questdb_std_Files_copyDataToOffset
+        (JNIEnv *e, jclass cls, jint srcFd, jint dstFd, jlong srcOffset, jlong dstOffset, jlong length) {
+    return (jlong) copyData0((int) srcFd, (int) dstFd, srcOffset, dstOffset, (int64_t) length);
 }
 
 JNIEXPORT jlong JNICALL Java_io_questdb_std_Files_getDiskSize(JNIEnv *e, jclass cl, jlong lpszPath) {
@@ -149,11 +149,11 @@ JNIEXPORT jboolean JNICALL Java_io_questdb_std_Files_setLastModified
     struct timeval t[2];
     gettimeofday(&t[0], NULL);
     t[1].tv_sec = millis / 1000;
-#ifdef __APPLE__    
+#ifdef __APPLE__
     t[1].tv_usec = (__darwin_suseconds_t) ((millis % 1000) * 1000);
 #else
     t[1].tv_usec = ((millis % 1000) * 1000);
-#endif    
+#endif
     return (jboolean) (utimes((const char *) lpszName, t) == 0);
 }
 
@@ -201,12 +201,12 @@ JNIEXPORT jint JNICALL Java_io_questdb_std_Files_copy
     const char *from = (const char *) lpszFrom;
     const char *to = (const char *) lpszTo;
     const int input = open(from, O_RDONLY);
-    if (-1 == (input)) {
+    if (input == -1) {
         return -1;
     }
 
     const int output = creat(to, 0644);
-    if (-1 == (output)) {
+    if (output == -1) {
         close(input);
         return -1;
     }
@@ -228,9 +228,17 @@ JNIEXPORT jlong JNICALL Java_io_questdb_std_Files_getFileSystemStatus
         // the FS name is 16
         strcpy((char *) lpszName, sb.f_fstypename);
         switch (sb.f_type) {
+            // known apfs types
             case 0x1C: // apfs
-                return -1 * ((jlong) sb.f_type);
+            case 0x1a: // apfs too
+            case 0x19: // apfs, since MacOS 15.0.z Sequoia
+                return FLAG_FS_SUPPORTED * ((jlong) sb.f_type);
             default:
+                // new MacOS releases change apfs f_type, so we need to check the name
+                // to prevent false negatives and scary messages in the logs and web console
+                if (strncmp((const char *) lpszName, "apfs", 4) == 0) {
+                    return FLAG_FS_SUPPORTED * ((jlong) sb.f_type);
+                }
                 return sb.f_type;
         }
     }
@@ -245,10 +253,10 @@ JNIEXPORT jboolean JNICALL Java_io_questdb_std_Files_allocate
     if (rc == 0) {
         return JNI_TRUE;
     }
-    if (rc == EINVAL) {
+    if (rc == EINVAL && len > 0) {
         // Some file systems (such as ZFS) do not support posix_fallocate
         struct stat st;
-        rc = fstat((int) fd, &st);
+        int rc = fstat((int) fd, &st);
         if (rc != 0) {
             return JNI_FALSE;
         }
@@ -260,6 +268,8 @@ JNIEXPORT jboolean JNICALL Java_io_questdb_std_Files_allocate
         }
         return JNI_TRUE;
     }
+
+    errno = rc; // communicate errno to caller
     return JNI_FALSE;
 }
 
@@ -279,7 +289,7 @@ JNIEXPORT jint JNICALL Java_io_questdb_std_Files_copy
         return -1;
     }
 
-    int result = copyData0(input, output, 0, -1);
+    int result = copyData0(input, output, 0, 0, -1);
     close(input);
     close(output);
 
@@ -419,7 +429,7 @@ JNIEXPORT jlong JNICALL Java_io_questdb_std_Files_getFileSystemStatus
                 return sb.f_type;
             case 0x794c7630:
                 strcpy((char *) lpszName, "OVERLAYFS");
-                return -1 * ((jlong) sb.f_type);
+                return FLAG_FS_SUPPORTED * ((jlong) sb.f_type);
             case 0x50495045:
                 strcpy((char *) lpszName, "PIPEFS");
                 return sb.f_type;
@@ -486,12 +496,16 @@ JNIEXPORT jlong JNICALL Java_io_questdb_std_Files_getFileSystemStatus
             case 0x00011954:
                 strcpy((char *) lpszName, "UFS");
                 return sb.f_type;
+            case 0x35:
+                strcpy((char *) lpszName, "UFS");
+                // tested with FreeBSD 13.2, partition type 'freebsd-ufs'
+                return FLAG_FS_SUPPORTED * sb.f_type;
             case 0x9fa2:
                 strcpy((char *) lpszName, "USBDEVICE");
                 return sb.f_type;
             case 0x01021997:
                 strcpy((char *) lpszName, "V9FS");
-                return -1 * ((jlong) sb.f_type);
+                return FLAG_FS_SUPPORTED * ((jlong) sb.f_type);
             case 0xa501fcf5:
                 strcpy((char *) lpszName, "VXFS");
                 return sb.f_type;
@@ -503,10 +517,10 @@ JNIEXPORT jlong JNICALL Java_io_questdb_std_Files_getFileSystemStatus
                 return sb.f_type;
             case 0x58465342:
                 strcpy((char *) lpszName, "XFS");
-                return sb.f_type;
+                return FLAG_FS_SUPPORTED * ((jlong) sb.f_type);
             case 0xEF53: // ext2, ext3, ext4
                 strcpy((char *) lpszName, "ext4");
-                return -1 * ((jlong) sb.f_type);
+                return FLAG_FS_SUPPORTED * ((jlong) sb.f_type);
             default:
                 strcpy((char *) lpszName, "unknown");
                 return sb.f_type;
@@ -517,4 +531,12 @@ JNIEXPORT jlong JNICALL Java_io_questdb_std_Files_getFileSystemStatus
 
 #endif
 
+JNIEXPORT jlong JNICALL Java_io_questdb_std_Files_getFileLimit
+        (JNIEnv *e, jclass cl) {
+    return 0; // no-op
+}
 
+JNIEXPORT jlong JNICALL Java_io_questdb_std_Files_getMapCountLimit
+        (JNIEnv *e, jclass cl) {
+    return 0; // no-op
+}

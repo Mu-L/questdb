@@ -6,7 +6,7 @@
  *    \__\_\\__,_|\___||___/\__|____/|____/
  *
  *  Copyright (c) 2014-2019 Appsicle
- *  Copyright (c) 2019-2023 QuestDB
+ *  Copyright (c) 2019-2024 QuestDB
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -53,6 +53,10 @@ public abstract class AbstractLowerCaseAsciiCharSequenceHashSet implements Mutab
         free = this.capacity;
     }
 
+    public boolean contains(CharSequence key) {
+        return keyIndex(key) < 0;
+    }
+
     public boolean excludes(CharSequence key) {
         return keyIndex(key) > -1;
     }
@@ -61,18 +65,12 @@ public abstract class AbstractLowerCaseAsciiCharSequenceHashSet implements Mutab
         return keyIndex(key, lo, hi) > -1;
     }
 
-    public int keyIndex(CharSequence key) {
-        int index = Chars.lowerCaseAsciiHashCode(key) & mask;
+    public CharSequence getKey(int index) {
+        return keys[index];
+    }
 
-        if (keys[index] == noEntryKey) {
-            return index;
-        }
-
-        if (Chars.equalsLowerCaseAscii(key, keys[index])) {
-            return -index - 1;
-        }
-
-        return probe(key, index);
+    public int getKeyCount() {
+        return keys.length;
     }
 
     public int keyIndex(CharSequence key, int lo, int hi) {
@@ -87,6 +85,20 @@ public abstract class AbstractLowerCaseAsciiCharSequenceHashSet implements Mutab
             return -index - 1;
         }
         return probe(key, lo, hi, index);
+    }
+
+    public int keyIndex(CharSequence key) {
+        int index = Chars.lowerCaseAsciiHashCode(key) & mask;
+
+        if (keys[index] == noEntryKey) {
+            return index;
+        }
+
+        if (Chars.equalsLowerCaseAscii(key, keys[index])) {
+            return -index - 1;
+        }
+
+        return probe(key, index);
     }
 
     public int remove(CharSequence key) {

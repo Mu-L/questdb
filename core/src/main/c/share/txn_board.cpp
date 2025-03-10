@@ -6,7 +6,7 @@
  *    \__\_\\__,_|\___||___/\__|____/|____/
  *
  *  Copyright (c) 2014-2019 Appsicle
- *  Copyright (c) 2019-2023 QuestDB
+ *  Copyright (c) 2019-2024 QuestDB
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -106,11 +106,11 @@ public:
         if (txn < last_min) {
             return -last_min - 1;
         }
-        auto countAfter = get_counter(txn).fetch_sub(1) - 1;
-        if (countAfter == 0 && last_min == txn) {
+        auto count_after = get_counter(txn).fetch_sub(1) - 1;
+        if (count_after == 0 && last_min == txn) {
             update_min(max);
         }
-        return countAfter;
+        return count_after;
     }
 
     // txn must be > 0
@@ -147,7 +147,6 @@ public:
             }
             // After pushing min as far as possible, take the clean value for next steps
             current_min = min.load();
-
         }
 
         if (txn - current_min < size) {
@@ -161,6 +160,15 @@ public:
         return -current_min - 2;
     }
 
+    // txn must be > 0
+    inline bool txn_increment(int64_t txn) {
+        auto count = get_counter(txn).load();
+        while (count > 0 && !get_counter(txn).compare_exchange_strong(count, count + 1)) {
+            count = get_counter(txn).load();
+        }
+        return count > 0;
+    }
+
     void init(uint32_t entry_count) {
         mask = entry_count - 1;
         size = entry_count;
@@ -170,7 +178,7 @@ public:
         min.compare_exchange_strong(expected, L_MIN);
     }
 
-    bool isRangeAvailable(int64_t from, int64_t to) {
+    bool is_range_available(int64_t from, int64_t to) {
         if (to >= min && from <= max) {
             for (int64_t txn = from; txn < to; txn++) {
                 if (get_count(txn) > 0) {
@@ -187,6 +195,11 @@ extern "C" {
 JNIEXPORT jlong JNICALL Java_io_questdb_cairo_TxnScoreboard_acquireTxn0
         (JAVA_STATIC, jlong p_txn_scoreboard, jlong txn) {
     return reinterpret_cast<txn_scoreboard_t<COUNTER_T> *>(p_txn_scoreboard)->txn_acquire(txn);
+}
+
+JNIEXPORT jboolean JNICALL Java_io_questdb_cairo_TxnScoreboard_incrementTxn0
+        (JAVA_STATIC, jlong p_txn_scoreboard, jlong txn) {
+    return reinterpret_cast<txn_scoreboard_t<COUNTER_T> *>(p_txn_scoreboard)->txn_increment(txn);
 }
 
 JNIEXPORT jlong JNICALL Java_io_questdb_cairo_TxnScoreboard_releaseTxn0
@@ -216,7 +229,7 @@ JNIEXPORT void JNICALL Java_io_questdb_cairo_TxnScoreboard_init
 
 JNIEXPORT jboolean JNICALL Java_io_questdb_cairo_TxnScoreboard_isRangeAvailable0
         (JAVA_STATIC, jlong p_txn_scoreboard, jlong from, jlong to) {
-    return reinterpret_cast<txn_scoreboard_t<COUNTER_T> *>(p_txn_scoreboard)->isRangeAvailable(from, to);
+    return reinterpret_cast<txn_scoreboard_t<COUNTER_T> *>(p_txn_scoreboard)->is_range_available(from, to);
 }
 
 }

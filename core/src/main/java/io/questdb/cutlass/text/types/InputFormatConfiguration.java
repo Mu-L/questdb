@@ -6,7 +6,7 @@
  *    \__\_\\__,_|\___||___/\__|____/|____/
  *
  *  Copyright (c) 2014-2019 Appsicle
- *  Copyright (c) 2019-2023 QuestDB
+ *  Copyright (c) 2019-2024 QuestDB
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -42,7 +42,7 @@ import java.io.IOException;
 import java.io.InputStream;
 
 public class InputFormatConfiguration {
-    private final static Log LOG = LogFactory.getLog(InputFormatConfiguration.class);
+    private static final Log LOG = LogFactory.getLog(InputFormatConfiguration.class);
     private static final int STATE_EXPECT_DATE_FORMAT_ARRAY = 2;
     private static final int STATE_EXPECT_DATE_FORMAT_ENTRY = 8;
     private static final int STATE_EXPECT_DATE_FORMAT_VALUE = 4;
@@ -137,13 +137,13 @@ public class InputFormatConfiguration {
         return timestampUtf8Flags;
     }
 
-    public void parseConfiguration(JsonLexer jsonLexer, String confRoot, String configFileName) throws JsonException {
+    public void parseConfiguration(Class<?> resourceLoader, JsonLexer jsonLexer, String confRoot, String configFileName) throws JsonException {
         clear();
         jsonLexer.clear();
 
         final JsonParser parser = this::onJsonEvent;
 
-        try (InputStream stream = openStream(confRoot, configFileName)) {
+        try (InputStream stream = openStream(resourceLoader, confRoot, configFileName)) {
             // here is where using direct memory is very disadvantageous
             // we will copy buffer twice to parse json, but luckily contents should be small,
             // and we should be parsing this only once on startup
@@ -314,7 +314,7 @@ public class InputFormatConfiguration {
         }
     }
 
-    private InputStream openStream(String confRoot, String configFileName) throws IOException, JsonException {
+    private InputStream openStream(Class<?> resourceLoader, String confRoot, String configFileName) throws IOException, JsonException {
         // First, check the user-provided file.
         if (confRoot != null) {
             final File configFile = new File(confRoot, configFileName);
@@ -324,7 +324,7 @@ public class InputFormatConfiguration {
             }
         }
         // Second, fall back to the default config.
-        final InputStream stream = this.getClass().getResourceAsStream(configFileName);
+        final InputStream stream = resourceLoader.getResourceAsStream(configFileName);
         if (stream != null) {
             LOG.info().$("loading input format config [resource=").$(configFileName).$(']').$();
             return stream;
